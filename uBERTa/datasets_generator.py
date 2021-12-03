@@ -1,23 +1,19 @@
 import logging
 import typing as t
-from collections import namedtuple
-from dataclasses import dataclass
-from itertools import chain, count, starmap
-from random import choice, randint
+from itertools import count, starmap
 from pathlib import Path
+from random import choice, randint
 
-import numpy as np
 import pandas as pd
 import pysam
 from Bio.Seq import Seq
-from more_itertools import unzip, sliding_window
-from tqdm.auto import tqdm
+from more_itertools import sliding_window
 from toolz import curry, identity
+from tqdm.auto import tqdm
 
-ColNames = namedtuple(
-    'ColNames', ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'],
-    defaults=['Chrom', 'StartCodonStart', 'StartCodonEnd', 'StartCodonFetched',
-              'Strand', 'Group', 'LevelStartCodonStartFetchedAround2', 'IsPositive'])
+from uBERTa.base import VALID_CHROM, VALID_CHROM_FLANKS, ColNames
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DatasetGenerator:
@@ -100,7 +96,7 @@ class DatasetGenerator:
             samples, self.ref, self.flank_size,
             self.col_names, self.kmer_size)
         if self.drop_meta:
-            seqs = seqs[['Seq', 'Class']]
+            seqs = seqs[['Seq', 'IsPositive']]
         self.last_generated = seqs
         return seqs
 
@@ -110,6 +106,9 @@ def reverse_complement(s: str):
 
 
 class Ref(pysam.FastaFile):
+    """
+    A wrapper around `pysam.FastaFile` for easier sampling.
+    """
 
     def get_names(self, valid=True):
         return [n for n in self.references
@@ -293,10 +292,12 @@ def sample_neg(
             LOGGER.warning(f'The number of desired samples {num} '
                            f'exceeds the number of existing ones with '
                            f'codon {codon} and max level {max_level}')
-
-        sub = sub.sample(min([num, len(sub)]), random_state=random_state)
-        LOGGER.info(f'Sampled {len(sub)} samples with codon {codon} '
-                    f'and max level {max_level}')
+        elif num == len(sub):
+            pass
+        else:
+            sub = sub.sample(min([num, len(sub)]), random_state=random_state)
+            LOGGER.info(f'Sampled {len(sub)} samples with codon {codon} '
+                        f'and max level {max_level}')
         return sub[sel_columns].copy()
 
     sel_columns = [col_names.chrom, col_names.start,
@@ -366,7 +367,8 @@ def sampled2train(
         pos = pos + offset
         seq = ref.fetch_around(chrom, pos, strand, flank_size)
         if kmer_size:
-            seq = kmer_sep.join(sliding_window(seq, kmer_size))
+            seq = kmer_sep.join(map(
+                lambda s: "".join(s), sliding_window(seq, kmer_size)))
         return seq.upper()
 
     names = [col_names.chrom, col_names.start, col_names.strand, col_names.positive]
