@@ -1,3 +1,4 @@
+import sys
 from collections import namedtuple
 
 VALID_CHROM = (*(f'chr{i}' for i in range(23)), 'chrX', 'chrY')
@@ -28,10 +29,17 @@ VALID_CHROM_FLANKS = {
     'chrY': (10000, 10000)
 }
 
-ColNames = namedtuple(
-    'ColNames', ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'],
-    defaults=['Chrom', 'StartCodonStart', 'StartCodonEnd', 'StartCodonFetched',
-              'Strand', 'Group', 'LevelStartCodonStartFetchedAround2', 'IsPositive'])
+_ColNames = namedtuple(
+    'ColNames',
+    ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'])
+_defaults = [
+    'Chrom', 'StartCodonStart', 'StartCodonEnd', 'StartCodonFetched',
+    'Strand', 'Group', 'LevelStartCodonStartFetchedAround2', 'IsPositive']
+if sys.version < "3.7":
+    ColNames = lambda: _ColNames(*_defaults)
+else:
+    ColNames = _ColNames
+    ColNames._field_defaults = _defaults
 
 if __name__ == '__main__':
     raise RuntimeError()
