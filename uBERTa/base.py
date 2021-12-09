@@ -38,8 +38,11 @@ _defaults = [
 if sys.version < "3.7":
     ColNames = lambda: _ColNames(*_defaults)
 else:
-    ColNames = _ColNames
-    ColNames._field_defaults = _defaults
+    ColNames = namedtuple(
+        'ColNames',
+        ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'],
+        defaults=_defaults
+    )
 
 if __name__ == '__main__':
     raise RuntimeError()

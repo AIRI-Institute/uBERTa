@@ -372,7 +372,8 @@ def sampled2train(
         return seq.upper()
 
     names = [col_names.chrom, col_names.start, col_names.strand, col_names.positive]
-    it = tqdm(ds[names].itertuples(), total=len(ds), desc='Fetching seqs')
+    # it = tqdm(ds[names].itertuples(), total=len(ds), desc='Fetching seqs')
+    it = ds[names].itertuples()
 
     return pd.DataFrame(
         ((chrom, start, strand, int(pos), prepare_seq(chrom, start, strand))
