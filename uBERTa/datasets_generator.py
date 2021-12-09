@@ -49,6 +49,8 @@ class DatasetGenerator:
                  level_ts: float = 0,
                  flank_size: int = 100,
                  kmer_size: t.Optional[int] = None,
+                 use_analyzed: bool = True,
+                 genes_of_pos: bool = False,
                  col_names: ColNames = ColNames(),
                  drop_meta: bool = False):
         """
@@ -82,13 +84,16 @@ class DatasetGenerator:
         self.level_ts = level_ts
         self.flank_size = flank_size
         self.kmer_size = kmer_size
+        self.use_analyzed = use_analyzed
+        self.genes_of_pos = genes_of_pos
         self.col_names = col_names
         self.drop_meta = drop_meta
         self.last_generated: t.Optional[pd.DataFrame] = None
 
     def __call__(self) -> pd.DataFrame:
+        df = self._prefilter()
         samples = sample_dataset(
-            self.neg_multiplier, self.ref, self.base_ds,
+            self.neg_multiplier, self.ref, df,
             self.neg_fractions, self.pos_fractions,
             self.level_ts, self.col_names
         )
@@ -99,6 +104,21 @@ class DatasetGenerator:
             seqs = seqs[['Seq', 'IsPositive']]
         self.last_generated = seqs
         return seqs
+
+    def _prefilter(self):
+        df = self.base_ds.copy()
+        LOGGER.info(f'Pre-filtering initial dataset with {len(df)} records')
+        if self.use_analyzed:
+            df = df[df[self.col_names.analyzed]]
+            LOGGER.info(f'Filtered to {len(df)} records of analyzed genes')
+        if self.genes_of_pos:
+            idx = (df[self.col_names.analyzed] &
+                   df[self.col_names.group.isin(['m', 'ma', 'u'])])
+            ids = set(df.loc[df[idx, self.col_names.gene_id]])
+            df = df[df[self.col_names.gene_id].isin(ids)]
+            LOGGER.info(f'Filtered to {len(df)} records of analyzed genes '
+                        f'with at least one positive example')
+        return df
 
 
 def reverse_complement(s: str):
@@ -201,9 +221,9 @@ def sample_dataset(
 ) -> pd.DataFrame:
     LOGGER.info(f'Obtained a dataset with {len(ds)} records')
 
-    idx_pos = ~ds[col_names.group].isna()
+    idx_pos = ds[col_names.group].isin(['m', 'u', 'ma'])
     ds_pos, ds_neg = ds[idx_pos], ds[~idx_pos]
-    LOGGER.info(f'Found {len(ds_pos)} positive and {len(ds_neg)} negative records')
+    LOGGER.info(f'Found {len(ds_pos)} positive and {len(ds_neg)} (potential) negative records')
 
     samples_pos = sample_pos(pos_fractions, ds_pos)
     LOGGER.info(f'Sampled {len(samples_pos)} positive examples')

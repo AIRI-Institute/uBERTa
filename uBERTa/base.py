@@ -29,20 +29,16 @@ VALID_CHROM_FLANKS = {
     'chrY': (10000, 10000)
 }
 
-_ColNames = namedtuple(
-    'ColNames',
-    ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'])
+_columns = ['chrom', 'start', 'end', 'codon', 'strand', 'gene_id', 'group', 'level', 'analyzed', 'positive']
 _defaults = [
     'Chrom', 'StartCodonStart', 'StartCodonEnd', 'StartCodonFetched',
-    'Strand', 'Group', 'LevelStartCodonStartFetchedAround2', 'IsPositive']
+    'Strand', 'GeneIDUnique', 'Group', 'LevelStartCodonStartFetchedAround2',
+    'IsAnalyzed', 'IsPositive']
+
 if sys.version < "3.7":
-    ColNames = lambda: _ColNames(*_defaults)
+    ColNames = lambda: namedtuple('ColNames', _columns)(*_defaults)
 else:
-    ColNames = namedtuple(
-        'ColNames',
-        ['chrom', 'start', 'end', 'codon', 'strand', 'group', 'level', 'positive'],
-        defaults=_defaults
-    )
+    ColNames = namedtuple('ColNames', _columns, defaults=_defaults)
 
 if __name__ == '__main__':
     raise RuntimeError()
