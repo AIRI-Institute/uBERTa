@@ -91,7 +91,7 @@ class DatasetGenerator:
         self.last_generated: t.Optional[pd.DataFrame] = None
 
     def __call__(self) -> pd.DataFrame:
-        df = self._prefilter()
+        df = self.prefilter()
         samples = sample_dataset(
             self.neg_multiplier, self.ref, df,
             self.neg_fractions, self.pos_fractions,
@@ -105,18 +105,18 @@ class DatasetGenerator:
         self.last_generated = seqs
         return seqs
 
-    def _prefilter(self):
+    def prefilter(self):
         df = self.base_ds.copy()
-        LOGGER.info(f'Pre-filtering initial dataset with {len(df)} records')
+        LOGGER.debug(f'Pre-filtering initial dataset with {len(df)} records')
         if self.use_analyzed:
             df = df[df[self.col_names.analyzed]]
-            LOGGER.info(f'Filtered to {len(df)} records of analyzed genes')
+            LOGGER.debug(f'Filtered to {len(df)} records of analyzed genes')
         if self.genes_of_pos:
             idx = (df[self.col_names.analyzed] &
                    df[self.col_names.group.isin(['m', 'ma', 'u'])])
             ids = set(df.loc[df[idx, self.col_names.gene_id]])
             df = df[df[self.col_names.gene_id].isin(ids)]
-            LOGGER.info(f'Filtered to {len(df)} records of analyzed genes '
+            LOGGER.debug(f'Filtered to {len(df)} records of analyzed genes '
                         f'with at least one positive example')
         return df
 
@@ -219,18 +219,18 @@ def sample_dataset(
         col_names: ColNames = ColNames(),
         random_state: t.Optional[int] = None
 ) -> pd.DataFrame:
-    LOGGER.info(f'Obtained a dataset with {len(ds)} records')
+    LOGGER.debug(f'Obtained a dataset with {len(ds)} records')
 
     idx_pos = ds[col_names.group].isin(['m', 'u', 'ma'])
     ds_pos, ds_neg = ds[idx_pos], ds[~idx_pos]
-    LOGGER.info(f'Found {len(ds_pos)} positive and {len(ds_neg)} (potential) negative records')
+    LOGGER.debug(f'Found {len(ds_pos)} positive and {len(ds_neg)} (potential) negative records')
 
     samples_pos = sample_pos(pos_fractions, ds_pos)
-    LOGGER.info(f'Sampled {len(samples_pos)} positive examples')
+    LOGGER.debug(f'Sampled {len(samples_pos)} positive examples')
 
     samples_neg = sample_neg(neg_multiplier, neg_fractions, samples_pos, ds_neg,
                              ref, level_ts, col_names, random_state)
-    LOGGER.info(f'Sampled {len(samples_neg)} negative examples')
+    LOGGER.debug(f'Sampled {len(samples_neg)} negative examples')
 
     samples_pos = samples_pos[[col_names.chrom, col_names.start, col_names.strand,
                                col_names.codon, col_names.group]]
@@ -238,7 +238,7 @@ def sample_dataset(
     samples_neg[col_names.positive] = False
 
     samples = pd.concat([samples_pos, samples_neg])
-    LOGGER.info(f'Concatenated into {len(samples)} total samples')
+    LOGGER.debug(f'Concatenated into {len(samples)} total samples')
 
     return samples
 
@@ -253,7 +253,7 @@ def sample_pos(
         sub = df_pos[df_pos[col_names.group] == g_name]
         num = int(len(sub) * frac)
         expr = f'{num}={len(sub)} * {frac}'
-        LOGGER.info(
+        LOGGER.debug(
             f'Will sample {expr} positive examples of group {g_name}')
         if num == len(sub):
             return sub
@@ -286,7 +286,7 @@ def sample_neg(
             sampler = lambda: ref.random_start()
         while len(samples) < num:
             samples.append(sampler())
-        LOGGER.info(f'Found {len(samples)} codons {codon}')
+        LOGGER.debug(f'Found {len(samples)} codons {codon}')
         samples = pd.DataFrame(
             (x[:3] for x in samples), columns=sel_columns[:3])
         samples[col_names.codon] = codon
@@ -306,7 +306,7 @@ def sample_neg(
         if min_level is not None:
             idx &= df_neg[col_names.level] >= min_level
         sub = df_neg[idx]
-        LOGGER.info(f'Found {len(sub)} records with codon {codon} '
+        LOGGER.debug(f'Found {len(sub)} records with codon {codon} '
                     f'and max level {max_level}')
         if num > len(sub):
             LOGGER.warning(f'The number of desired samples {num} '
@@ -316,7 +316,7 @@ def sample_neg(
             pass
         else:
             sub = sub.sample(min([num, len(sub)]), random_state=random_state)
-            LOGGER.info(f'Sampled {len(sub)} samples with codon {codon} '
+            LOGGER.debug(f'Sampled {len(sub)} samples with codon {codon} '
                         f'and max level {max_level}')
         return sub[sel_columns].copy()
 
@@ -328,7 +328,7 @@ def sample_neg(
         raise ValueError(f'The `neg_fractions` {neg_fractions} '
                          f'must sum to 1.0; got {sum_neg}')
     neg_total = len(df_pos) * neg_multiplier
-    LOGGER.info(f'Expecting around {neg_total} total negative examples')
+    LOGGER.debug(f'Expecting around {neg_total} total negative examples')
 
     # Derive per codon counts of samples within each group in the provided fractions
     codon_counts = df_pos[col_names.codon].value_counts().to_dict()
@@ -352,25 +352,25 @@ def sample_neg(
     # Output the progress
     expected_samples = sum(sum(d.values()) for d in samples_per_codon.values())
     LOGGER.debug(f'Samples per codon counts: {samples_per_codon}')
-    LOGGER.info(f'Num samples after the per-codon correction: {expected_samples}')
+    LOGGER.debug(f'Num samples after the per-codon correction: {expected_samples}')
 
     random_samples = pd.concat(starmap(
         sample_random,
         samples_per_codon['random'].items()))
     random_samples[col_names.group] = 'random'
-    LOGGER.info(f'Sampled {len(random_samples)} random start codons')
+    LOGGER.debug(f'Sampled {len(random_samples)} random start codons')
 
     valid_samples_below = pd.concat(starmap(
         sample_valid(max_level=level_ts),
         samples_per_codon['below_level'].items()))
     valid_samples_below[col_names.group] = 'below_level'
-    LOGGER.info(f'Sampled {len(valid_samples_below)} with level <= {level_ts}')
+    LOGGER.debug(f'Sampled {len(valid_samples_below)} with level <= {level_ts}')
 
     valid_samples_above = pd.concat(starmap(
         sample_valid(min_level=level_ts + 0.01),
         samples_per_codon['above_level'].items()))
     valid_samples_above[col_names.group] = 'above_level'
-    LOGGER.info(f'Sampled {len(valid_samples_above)} with level > {level_ts + 0.01}')
+    LOGGER.debug(f'Sampled {len(valid_samples_above)} with level > {level_ts + 0.01}')
 
     return pd.concat(
         [random_samples, valid_samples_below, valid_samples_above],
