@@ -113,8 +113,8 @@ class DatasetGenerator:
             LOGGER.debug(f'Filtered to {len(df)} records of analyzed genes')
         if self.genes_of_pos:
             idx = (df[self.col_names.analyzed] &
-                   df[self.col_names.group.isin(['m', 'ma', 'u'])])
-            ids = set(df.loc[df[idx, self.col_names.gene_id]])
+                   df[self.col_names.group].isin(['m', 'ma', 'u']))
+            ids = set(df.loc[idx, self.col_names.gene_id])
             df = df[df[self.col_names.gene_id].isin(ids)]
             LOGGER.debug(f'Filtered to {len(df)} records of analyzed genes '
                         f'with at least one positive example')
