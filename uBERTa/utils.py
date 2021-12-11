@@ -227,9 +227,9 @@ def run_epoch(model, loader, optimizer, scheduler, device, mode: str = 'train'):
                 outputs = model(
                     input_ids=inp_ids, attention_mask=att_mask,
                     labels=labels, sample_weight=weights)
-        loss, logits = outputs[:2]
+        loss, prob = outputs[:2]
         total_loss += loss.mean().item()
-        predictions.append(logits.detach().cpu().numpy())
+        predictions.append(prob.detach().cpu().numpy())
 
         if mode == 'train':
             loss.backward()
