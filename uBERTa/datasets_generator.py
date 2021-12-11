@@ -4,12 +4,12 @@ from itertools import count, starmap
 from pathlib import Path
 from random import choice, randint
 
+import numpy as np
 import pandas as pd
 import pysam
 from Bio.Seq import Seq
 from more_itertools import sliding_window
 from toolz import curry, identity
-from tqdm.auto import tqdm
 
 from uBERTa.base import VALID_CHROM, VALID_CHROM_FLANKS, ColNames
 
@@ -97,7 +97,7 @@ class DatasetGenerator:
             self.neg_fractions, self.pos_fractions,
             self.level_ts, self.col_names
         )
-        seqs = sampled2train(
+        seqs = prepare_sequences(
             samples, self.ref, self.flank_size,
             self.col_names, self.kmer_size)
         if self.drop_meta:
@@ -377,7 +377,7 @@ def sample_neg(
         ignore_index=True)
 
 
-def sampled2train(
+def prepare_sequences(
         ds: pd.DataFrame, ref: Ref, flank_size: int,
         col_names: ColNames = ColNames(),
         kmer_size: t.Optional[int] = None, kmer_sep: str = ' '
@@ -400,6 +400,14 @@ def sampled2train(
          for _, chrom, start, strand, pos in it),
         columns=names + ['Seq']
     )
+
+
+def train_test_split(
+    df: pd.DataFrame, test_fraction: float
+) -> t.Tuple[pd.DataFrame, pd.DataFrame]:
+    idx = np.zeros(len(df)).astype(bool)
+    idx[np.random.randint(0, len(df), int(len(df) * test_fraction))] = True
+    return df[idx], df[~idx]
 
 
 if __name__ == '__main__':

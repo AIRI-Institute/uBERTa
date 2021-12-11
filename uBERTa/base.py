@@ -40,5 +40,13 @@ if sys.version < "3.7":
 else:
     ColNames = namedtuple('ColNames', _columns, defaults=_defaults)
 
+ModelSetup = namedtuple('Setup', ['Config', 'Model', 'Tokenizer', 'ModelPath'])
+RunSetup = namedtuple('Setup', ['BatchSize', 'Epochs', 'WarmupPerc'])
+OptSetup = namedtuple('Setup', ['LearningRate', 'Epsilon', 'Betas', 'WeightDecay'])
+StopSetup = namedtuple('Setup', ['Rounds', 'Tolerance'])
+
+Scores = namedtuple('Scores', ['acc', 'roc_auc', 'f1', 'prec', 'rec'])
+
+
 if __name__ == '__main__':
     raise RuntimeError()
