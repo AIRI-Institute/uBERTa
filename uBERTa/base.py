@@ -43,7 +43,7 @@ else:
 ModelSetup = namedtuple('Setup', ['Config', 'Model', 'Tokenizer', 'ModelPath'])
 RunSetup = namedtuple('Setup', ['BatchSize', 'Epochs', 'WarmupPerc'])
 OptSetup = namedtuple('Setup', ['LearningRate', 'Epsilon', 'Betas', 'WeightDecay'])
-StopSetup = namedtuple('Setup', ['Rounds', 'Tolerance'])
+StopSetup = namedtuple('Setup', ['Rounds', 'Tolerance', 'ScoreType'])
 
 Scores = namedtuple('Scores', ['acc', 'roc_auc', 'f1', 'prec', 'rec'])
 
