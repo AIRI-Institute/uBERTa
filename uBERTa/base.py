@@ -29,11 +29,13 @@ VALID_CHROM_FLANKS = {
     'chrY': (10000, 10000)
 }
 
-_columns = ['chrom', 'start', 'end', 'codon', 'strand', 'gene_id', 'group', 'level', 'analyzed', 'positive']
+_columns = ['chrom', 'start', 'end', 'codon', 'strand', 'gene_id',
+            'group', 'level', 'analyzed', 'cls', 'cc', 'seq',
+            'classes', 'starts']
 _defaults = [
-    'Chrom', 'StartCodonStart', 'StartCodonEnd', 'StartCodonFetched',
+    'Chrom', 'Start', 'End', 'StartCodonFetched',
     'Strand', 'GeneIDUnique', 'Group', 'LevelStartCodonStartFetchedAround2',
-    'IsAnalyzed', 'IsPositive']
+    'IsAnalyzed', 'IsPositive', 'CC', 'Seq', 'Classes', 'Starts']
 
 if sys.version < "3.7":
     ColNames = lambda: namedtuple('ColNames', _columns)(*_defaults)

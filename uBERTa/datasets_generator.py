@@ -4,11 +4,13 @@ from itertools import count, starmap
 from pathlib import Path
 from random import choice, randint
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 import pysam
 from Bio.Seq import Seq
 from more_itertools import sliding_window
+from ncls import NCLS
 from toolz import curry, identity
 
 from uBERTa.base import VALID_CHROM, VALID_CHROM_FLANKS, ColNames
@@ -20,6 +22,7 @@ class DatasetGenerator:
     """
     An interface class to generate (u)ORF datasets.
 
+    # TODO: update docs
     Class is a container for the generation settings.
     Use case: generate datasets with different examples, but preserving the composition,
     i.e., the balance between different kinds of positive and negative examples.
@@ -38,21 +41,18 @@ class DatasetGenerator:
     examples taken from putative uORFs with no experimental signal (2*N*0.2 in total).
     For all examples we want to take 50 nucleotides around the middle of the start codon.
 
-    >>> from pathlib import Path
-    >>> ds_path, ref_path = Path('/path/to/dataset'), Path('path/to/ref')
-    >>> datagen = DatasetGenerator(ds_path, ref_path, 2, (0, 0.8, 0.2, 0), flank_size=50)
-    >>> dataset = datagen()
     """
-    def __init__(self, ds_path: Path, ref_path: Path, neg_multiplier: int,
-                 neg_fractions: t.Tuple[float, float, float, float],
+
+    def __init__(self, ds_path: Path, ref_path: Path, neg_multiplier: int = 1,
+                 neg_fractions: t.Tuple[float, float, float, float] = (0.0, 0.5, 0.5, 0.0),
                  pos_fractions: t.Tuple[float, float, float] = (1.0, 1.0, 1.0),
                  level_ts: float = 0,
-                 flank_size: int = 100,
+                 flank_size: int = 200,
                  kmer_size: t.Optional[int] = None,
                  use_analyzed: bool = True,
                  genes_of_pos: bool = False,
-                 col_names: ColNames = ColNames(),
-                 drop_meta: bool = False):
+                 col_names: ColNames = ColNames()
+                 ):
         """
         :param ds_path: A path to a dataset with columns with both positive and negative examples
             (what we call the "base" dataset).
@@ -74,7 +74,6 @@ class DatasetGenerator:
             position of the start codon.
         :param kmer_size: Tokenize sequences into kmers with this size.
         :param col_names: Column names of the dataset parsed from `ds_path`.
-        :param drop_meta: Leave only two columns: "Seq" and "Class", drop the rest.
         """
         self.base_ds = pd.read_csv(ds_path, sep='\t')
         self.ref = Ref(str(ref_path))
@@ -87,23 +86,7 @@ class DatasetGenerator:
         self.use_analyzed = use_analyzed
         self.genes_of_pos = genes_of_pos
         self.col_names = col_names
-        self.drop_meta = drop_meta
         self.last_generated: t.Optional[pd.DataFrame] = None
-
-    def __call__(self) -> pd.DataFrame:
-        df = self.prefilter()
-        samples = sample_dataset(
-            self.neg_multiplier, self.ref, df,
-            self.neg_fractions, self.pos_fractions,
-            self.level_ts, self.col_names
-        )
-        seqs = prepare_sequences(
-            samples, self.ref, self.flank_size,
-            self.col_names, self.kmer_size)
-        if self.drop_meta:
-            seqs = seqs[['Seq', 'IsPositive']]
-        self.last_generated = seqs
-        return seqs
 
     def prefilter(self):
         df = self.base_ds.copy()
@@ -117,12 +100,79 @@ class DatasetGenerator:
             ids = set(df.loc[idx, self.col_names.gene_id])
             df = df[df[self.col_names.gene_id].isin(ids)]
             LOGGER.debug(f'Filtered to {len(df)} records of analyzed genes '
-                        f'with at least one positive example')
+                         f'with at least one positive example')
+        self.last_generated = df
         return df
 
+    def assign_class_by_group(self, df: t.Optional[pd.DataFrame] = None,
+                              g_pos: t.Tuple[str, ...] = ('m', 'ma', 'u'),
+                              g_neg: t.Tuple[str, ...] = ('s',)):
+        if df is None:
+            df = self.last_generated
+        else:
+            df = df.copy()
+        cls_col, grp_col = self.col_names.cls, self.col_names.group
+        df[cls_col] = np.nan
+        df.loc[df[grp_col].isin(g_pos), cls_col] = 1
+        df.loc[df[grp_col].isin(g_neg), cls_col] = 0
+        num_na, num_pos, num_neg, num_tot = map(
+            len, [df[df[cls_col].isna()], df[df[cls_col] == 1], df[df[cls_col] == 0], df])
+        LOGGER.debug(f'Assigned {num_pos} positive, {num_neg} negative; unassigned {num_na}; total {num_tot}')
+        self.last_generated = df
+        return df
 
-def reverse_complement(s: str):
-    return Seq(s).reverse_complement()
+    def sample(self, df: t.Optional[pd.DataFrame] = None):
+        if df is None:
+            df = self.last_generated
+        else:
+            df = df.copy()
+        samples = sample_dataset(
+            self.neg_multiplier, self.ref, df,
+            self.neg_fractions, self.pos_fractions,
+            self.level_ts, self.col_names
+        )
+        LOGGER.debug(f'Generated {len(samples)} samples')
+        self.last_generated = samples
+        return df
+
+    def assign_cc(self, df: t.Optional[pd.DataFrame] = None):
+        if df is None:
+            df = self.last_generated
+        else:
+            df = df.copy()
+
+        def sep_group(gg):
+            centers = gg[self.col_names.start].values + 1
+            starts = centers - self.flank_size
+            ends = centers + self.flank_size
+            ccs = group_overlapping(starts, ends, gg.index.values)
+
+            gg[self.col_names.cc] = 0
+            for i, cc in enumerate(ccs, start=1):
+                gg.loc[list(cc), self.col_names.cc] = i
+            return gg
+
+        df = df.groupby(
+            [self.col_names.chrom, self.col_names.strand],
+            as_index=False
+        ).apply(sep_group)
+        self.last_generated = df
+        return df
+
+    def prepare_seqs(self, df: t.Optional[pd.DataFrame] = None,
+                     merge_overlapping: bool = False):
+        if df is None:
+            df = self.last_generated
+        else:
+            df = df.copy()
+        if merge_overlapping:
+            seqs = prepare_overlapping_seqs(
+                df, self.ref, self.flank_size, self.col_names)
+        else:
+            seqs = prepare_seqs_around(
+                df, self.ref, self.flank_size, self.col_names, self.kmer_size)
+        self.last_generated = seqs
+        return seqs
 
 
 class Ref(pysam.FastaFile):
@@ -144,7 +194,7 @@ class Ref(pysam.FastaFile):
         end = min([pos + flank_size + 1, length])
         seq = self.fetch(chrom, start, end)
         if strand == '-':
-            seq = str(reverse_complement(seq))
+            seq = reverse_complement(seq)
         return seq
 
     def random_start(self):
@@ -204,11 +254,14 @@ class Ref(pysam.FastaFile):
 
         seq = None
         if fetch and flank_size:
-            offset = -2 if strand == '-' else 1
-            i_start = idx_codon + offset
+            i_start = idx_codon + 1
             seq = self.fetch_around(chrom, i_start, strand, flank_size)
 
         return chrom, idx_codon, strand, length, seq
+
+
+def reverse_complement(s: str) -> str:
+    return str(Seq(s).reverse_complement())
 
 
 def sample_dataset(
@@ -234,8 +287,8 @@ def sample_dataset(
 
     samples_pos = samples_pos[[col_names.chrom, col_names.start, col_names.strand,
                                col_names.codon, col_names.group]]
-    samples_pos[col_names.positive] = True
-    samples_neg[col_names.positive] = False
+    samples_pos[col_names.cls] = True
+    samples_neg[col_names.cls] = False
 
     samples = pd.concat([samples_pos, samples_neg])
     LOGGER.debug(f'Concatenated into {len(samples)} total samples')
@@ -307,7 +360,7 @@ def sample_neg(
             idx &= df_neg[col_names.level] >= min_level
         sub = df_neg[idx]
         LOGGER.debug(f'Found {len(sub)} records with codon {codon} '
-                    f'and max level {max_level}')
+                     f'and max level {max_level}')
         if num > len(sub):
             LOGGER.warning(f'The number of desired samples {num} '
                            f'exceeds the number of existing ones with '
@@ -317,7 +370,7 @@ def sample_neg(
         else:
             sub = sub.sample(min([num, len(sub)]), random_state=random_state)
             LOGGER.debug(f'Sampled {len(sub)} samples with codon {codon} '
-                        f'and max level {max_level}')
+                         f'and max level {max_level}')
         return sub[sel_columns].copy()
 
     sel_columns = [col_names.chrom, col_names.start,
@@ -377,33 +430,77 @@ def sample_neg(
         ignore_index=True)
 
 
-def prepare_sequences(
+def prepare_seqs_around(
         ds: pd.DataFrame, ref: Ref, flank_size: int,
         col_names: ColNames = ColNames(),
         kmer_size: t.Optional[int] = None, kmer_sep: str = ' '
 ) -> pd.DataFrame:
     def prepare_seq(chrom, pos, strand):
-        offset = -2 if strand == '-' else 1
-        pos = pos + offset
-        seq = ref.fetch_around(chrom, pos, strand, flank_size)
+        seq = ref.fetch_around(chrom, pos + 1, strand, flank_size)
         if kmer_size:
             seq = kmer_sep.join(map(
                 lambda s: "".join(s), sliding_window(seq, kmer_size)))
         return seq.upper()
 
-    names = [col_names.chrom, col_names.start, col_names.strand, col_names.positive]
-    # it = tqdm(ds[names].itertuples(), total=len(ds), desc='Fetching seqs')
-    it = ds[names].itertuples()
+    names = [col_names.chrom, col_names.start, col_names.strand, col_names.cls]
 
     return pd.DataFrame(
         ((chrom, start, strand, int(pos), prepare_seq(chrom, start, strand))
-         for _, chrom, start, strand, pos in it),
-        columns=names + ['Seq']
+         for _, chrom, start, strand, pos in ds[names].itertuples()),
+        columns=names + [col_names.seq]
     )
 
 
+def group_overlapping(starts, ends, ids):
+    """
+    Find all overlapping intervals, turn them into a graph,
+    return graph's conneted components.
+    """
+    tree = NCLS(starts, ends, ids)
+    idx_q, idx_s = tree.all_overlaps_both(starts, ends, ids)
+    idx_self = idx_q == idx_s
+    idx_q, idx_s = idx_q[~idx_self], idx_s[~idx_self]
+    g = nx.Graph(zip(idx_q, idx_s))
+    return nx.connected.connected_components(g)
+
+
+def prepare_overlapping_seqs(
+        ds: pd.DataFrame,
+        ref: Ref,
+        flank_size: int,
+        col_names: ColNames = ColNames(),
+):
+    def process_group(gg):
+        gg = gg.sort_values(col_names.start)
+        chrom = gg[col_names.chrom].iloc[0]
+        strand = gg[col_names.strand].iloc[0]
+
+        starts = gg[col_names.start].values
+        centers = starts + 1
+        start = centers[0] - flank_size
+        end = centers[-1] + flank_size + 1
+
+        centers = centers - start
+        ann_classes = np.full(end - start, -100)
+        ann_classes[centers] = gg[col_names.cls].values
+
+        seq = ref.fetch(chrom, start, end)
+        if strand == '-':
+            seq = reverse_complement(seq)
+            ann_classes = np.flip(ann_classes)
+
+        return chrom, strand, seq.upper(), ann_classes, starts
+
+    groups = (gg for _, gg in ds.groupby(
+        [col_names.chrom, col_names.strand, col_names.cc]))
+    return pd.DataFrame(
+        map(process_group, groups),
+        columns=[col_names.chrom, col_names.strand, col_names.seq,
+                 col_names.classes, col_names.starts])
+
+
 def train_test_split(
-    df: pd.DataFrame, test_fraction: float
+        df: pd.DataFrame, test_fraction: float
 ) -> t.Tuple[pd.DataFrame, pd.DataFrame]:
     idx = np.zeros(len(df)).astype(bool)
     idx[np.random.randint(0, len(df), int(len(df) * test_fraction))] = True

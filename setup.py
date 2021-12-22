@@ -27,6 +27,8 @@ setup(
         'tqdm',
         'toolz',
         'more-itertools>=8.12.0',
+        'networkx',
+        'ncls'
     ],
     # include_package_data=True,
     # package_data={
