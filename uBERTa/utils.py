@@ -219,6 +219,8 @@ def train(
 
     total_steps = len(train_loader) * run_setup.Epochs
     warmup_steps = int(total_steps * run_setup.WarmupPerc)
+    LOGGER.info(f'Estimated total steps: {total_steps}')
+    LOGGER.info(f'Estimated warmup steps: {warmup_steps}')
 
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [

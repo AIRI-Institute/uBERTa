@@ -14,4 +14,10 @@ Remarks:
 - You may need to unpack the base dataset first due to pandas having header parsing issues of the archived table (e.g., `tar -xzf DS_BASE.tsv.tar.gz`)
 - For CLI downloads consider using [gdown](https://github.com/wkentaro/gdown) as `gdown --fuzzy ...` with the links above.
 
-Follow-up: check the Jupyter notebook `generator_usage.ipynb`
+Follow-up: check the Jupyter notebook `./notebooks/generator_usage.ipynb`.
+
+----
+
+# Fine-tuning the model
+
+Check the Jupyter notebook `notebooks/fine_tune_example.ipynb`.
