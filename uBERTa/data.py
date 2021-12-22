@@ -1,6 +1,7 @@
 import logging
+import operator as op
 import typing as t
-from itertools import count, starmap
+from itertools import count, starmap, chain
 from pathlib import Path
 from random import choice, randint
 
@@ -165,12 +166,8 @@ class DatasetGenerator:
             df = self.last_generated
         else:
             df = df.copy()
-        if merge_overlapping:
-            seqs = prepare_overlapping_seqs(
-                df, self.ref, self.flank_size, self.col_names)
-        else:
-            seqs = prepare_seqs_around(
-                df, self.ref, self.flank_size, self.col_names, self.kmer_size)
+        preparator = prepare_overlapping_seqs if merge_overlapping else prepare_seqs_around
+        seqs = preparator(df, self.ref, self.flank_size, self.kmer_size, self.col_names)
         self.last_generated = seqs
         return seqs
 
@@ -262,6 +259,10 @@ class Ref(pysam.FastaFile):
 
 def reverse_complement(s: str) -> str:
     return str(Seq(s).reverse_complement())
+
+
+def kmerize(seq: str, kmer_size: int) -> str:
+    return " ".join(map(lambda s: "".join(s), sliding_window(seq, kmer_size)))
 
 
 def sample_dataset(
@@ -433,13 +434,12 @@ def sample_neg(
 def prepare_seqs_around(
         ds: pd.DataFrame, ref: Ref, flank_size: int,
         col_names: ColNames = ColNames(),
-        kmer_size: t.Optional[int] = None, kmer_sep: str = ' '
+        kmer_size: t.Optional[int] = None,
 ) -> pd.DataFrame:
     def prepare_seq(chrom, pos, strand):
         seq = ref.fetch_around(chrom, pos + 1, strand, flank_size)
         if kmer_size:
-            seq = kmer_sep.join(map(
-                lambda s: "".join(s), sliding_window(seq, kmer_size)))
+            seq = kmerize(seq, kmer_size)
         return seq.upper()
 
     names = [col_names.chrom, col_names.start, col_names.strand, col_names.cls]
@@ -453,8 +453,8 @@ def prepare_seqs_around(
 
 def group_overlapping(starts, ends, ids):
     """
-    Find all overlapping intervals, turn them into a graph,
-    return graph's conneted components.
+    Find all overlapping intervals, turn them into a graph.
+    Return graph's conneted components.
     """
     tree = NCLS(starts, ends, ids)
     idx_q, idx_s = tree.all_overlaps_both(starts, ends, ids)
@@ -468,6 +468,7 @@ def prepare_overlapping_seqs(
         ds: pd.DataFrame,
         ref: Ref,
         flank_size: int,
+        kmer_size: t.Optional[int] = None,
         col_names: ColNames = ColNames(),
 ):
     def process_group(gg):
@@ -489,10 +490,17 @@ def prepare_overlapping_seqs(
             seq = reverse_complement(seq)
             ann_classes = np.flip(ann_classes)
 
+        if kmer_size:
+            seq = kmerize(seq, kmer_size)
+
         return chrom, strand, seq.upper(), ann_classes, starts
 
-    groups = (gg for _, gg in ds.groupby(
-        [col_names.chrom, col_names.strand, col_names.cc]))
+    idx = ds[col_names.cc] == 0
+    group_vars = [col_names.chrom, col_names.strand, col_names.cc, col_names.start]
+    getter = op.itemgetter(1)
+    groups_solitary = map(getter, ds[idx].groupby(group_vars))
+    groups_overlapping = map(getter, ds[~idx].groupby(group_vars[:-1]))
+    groups = chain(groups_solitary, groups_overlapping)
     return pd.DataFrame(
         map(process_group, groups),
         columns=[col_names.chrom, col_names.strand, col_names.seq,
