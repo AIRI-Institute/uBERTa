@@ -9,12 +9,15 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import pysam
+import pytorch_lightning as pl
 from Bio.Seq import Seq
-from more_itertools import sliding_window
+from more_itertools import sliding_window, windowed
 from ncls import NCLS
 from toolz import curry, identity
+from torch.utils.data import TensorDataset, RandomSampler, SequentialSampler, DataLoader
 
 from uBERTa.base import VALID_CHROM, VALID_CHROM_FLANKS, ColNames
+from uBERTa.tokenizer import DNATokenizer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -172,6 +175,104 @@ class DatasetGenerator:
         return seqs
 
 
+class MLMLoader(pl.LightningDataModule):
+
+    def __init__(self, df: pd.DataFrame, window_size: int, window_step: int,
+                 tokenizer: t.Optional[DNATokenizer] = None,
+                 train_tds: t.Optional[TensorDataset] = None,
+                 val_tds: t.Optional[TensorDataset] = None,
+                 test_tds: t.Optional[TensorDataset] = None,
+                 val_fraction: float = 0.1, test_fraction: float = 0.1, batch_size: int = 2 ** 5, num_proc: int = 8,
+                 col_names: ColNames = ColNames(),
+                 ):
+        super().__init__()
+        self.df = df
+        self.window_size = window_size
+        self.window_step = window_step
+        self.tokenizer = tokenizer
+        self.val_fraction = val_fraction
+        self.test_fraction = test_fraction
+        self.batch_size = batch_size
+        self.num_proc = num_proc
+        self.col_names = col_names
+
+        self.train = train_tds
+        self.val = val_tds
+        self.test = test_tds
+
+        self.kmer = None if tokenizer is None else tokenizer.kmer
+
+    def setup(self, stage: t.Optional[str] = None) -> None:
+        LOGGER.info(f'Total overlapping regions: {len(self.df)}')
+        val, tmp = train_test_split(self.df, self.val_fraction)
+        test, train = train_test_split(
+            tmp, self.test_fraction / (1 - self.val_fraction))
+        LOGGER.info(
+            f'Obtained new datasets. '
+            f'Train: {len(train)}, Val: {len(val)}, Test: {len(test)}')
+        train, val, test = starmap(self._process_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
+        return train, val, test
+
+    def _process_ds(self, df: pd.DataFrame, df_name: str):
+        LOGGER.debug(f'Processing {df_name} with {len(df)} records')
+
+        size, step = self.window_size - 2, self.window_step  # account for [CLS] and [SEP]
+        rolled = self.roll_window(df, size, step)
+        LOGGER.debug(f'Rolled window with size {size}, step {step}; records: {len(rolled)}')
+
+        rolled[self.col_names.starts] = rolled[self.col_names.starts].apply(self._reduce_by_middle)
+        rolled[self.col_names.classes] = rolled[self.col_names.classes].apply(self._reduce_by_middle)
+        LOGGER.debug(f'Reduced labels to token level')
+        return rolled
+
+    def roll_window(self, df: pd.DataFrame, window_size: int, window_step: int) -> pd.DataFrame:
+        _windowed = curry(windowed)(n=window_size, step=window_step)
+
+        def roll(row):
+            seq, cls, starts = (
+                row[self.col_names.seq], row[self.col_names.classes], row[self.col_names.starts])
+            seq = seq.split()
+            assert len(seq) == len(cls) == len(starts)
+            seq_chunks = _windowed(seq, fillvalue='[PAD]')
+            cls_chunks = _windowed(cls, fillvalue=np.full(self.kmer, -100))
+            starts_chunks = _windowed(starts, fillvalue=np.zeros(self.kmer, dtype=int))
+            for seq_chunk, cls_chunk, starts_chunk in zip(seq_chunks, cls_chunks, starts_chunks):
+                yield (row[self.col_names.chrom], row[self.col_names.strand],
+                       " ".join(seq_chunk), np.array(cls_chunk), np.array(starts_chunk))
+
+        rolled = chain.from_iterable(
+            map(roll, map(op.itemgetter(1), df.iterrows())))
+        cols = [self.col_names.chrom, self.col_names.strand, self.col_names.seq,
+                self.col_names.classes, self.col_names.starts]
+
+        return pd.DataFrame(rolled, columns=cols)
+
+    @staticmethod
+    def _reduce_by_middle(a):
+        assert len(a.shape) >= 2
+        assert a.shape[1] % 2 == 1
+        m = a.shape[1] // 2
+        return np.squeeze(a[:, m])
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train, sampler=RandomSampler(self.train),
+            batch_size=self.batch_size, num_workers=self.num_proc)
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val, sampler=SequentialSampler(self.val),
+            batch_size=self.batch_size, num_workers=self.num_proc)
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test, sampler=SequentialSampler(self.test),
+            batch_size=self.batch_size, num_workers=self.num_proc)
+
+    def predict_dataloader(self) -> DataLoader:
+        return self.val_dataloader()
+
+
 class Ref(pysam.FastaFile):
     """
     A wrapper around `pysam.FastaFile` for easier sampling.
@@ -235,6 +336,7 @@ class Ref(pysam.FastaFile):
             fetch: bool = False,
             flank_size: t.Optional[int] = 100,
     ):
+        assert max_scans is None or max_scans >= 1
         idx_codon = None
         iters = range(max_scans) if max_scans else count()
         for _ in iters:
@@ -485,15 +587,24 @@ def prepare_overlapping_seqs(
         ann_classes = np.full(end - start, -100)
         ann_classes[centers] = gg[col_names.cls].values
 
+        _starts = np.zeros(end - start, dtype=int)
+        _starts[ann_classes != -100] = starts
+
         seq = ref.fetch(chrom, start, end)
         if strand == '-':
             seq = reverse_complement(seq)
             ann_classes = np.flip(ann_classes)
+            _starts = np.flip(_starts)
 
         if kmer_size:
-            seq = kmerize(seq, kmer_size)
-
-        return chrom, strand, seq.upper(), ann_classes, starts
+            for i in range(3):
+                _seq = kmerize(seq[i:], kmer_size)
+                _ann, _st = map(
+                    lambda x: np.array(list(sliding_window(x[i:], kmer_size))),
+                    [ann_classes, _starts])
+                yield chrom, strand, _seq.upper(), _ann, _st
+        else:
+            yield chrom, strand, seq.upper(), ann_classes, _starts
 
     idx = ds[col_names.cc] == 0
     group_vars = [col_names.chrom, col_names.strand, col_names.cc, col_names.start]
@@ -502,7 +613,7 @@ def prepare_overlapping_seqs(
     groups_overlapping = map(getter, ds[~idx].groupby(group_vars[:-1]))
     groups = chain(groups_solitary, groups_overlapping)
     return pd.DataFrame(
-        map(process_group, groups),
+        chain.from_iterable(map(process_group, groups)),
         columns=[col_names.chrom, col_names.strand, col_names.seq,
                  col_names.classes, col_names.starts])
 

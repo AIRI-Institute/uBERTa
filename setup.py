@@ -28,7 +28,11 @@ setup(
         'toolz',
         'more-itertools>=8.12.0',
         'networkx',
-        'ncls'
+        'ncls',
+        'scipy',
+        'transformers',
+        'pytorch',
+        'pytorch-lightning'
     ],
     # include_package_data=True,
     # package_data={

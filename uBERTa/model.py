@@ -1,6 +1,6 @@
 from torch import nn
 from transformers import BertPreTrainedModel, BertModel, BertForMaskedLM
-from transformers.modeling_bert import BertOnlyMLMHead
+from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 
 
 class uBERTa(BertPreTrainedModel):
