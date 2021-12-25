@@ -27,7 +27,7 @@ class DNATokenizer(PreTrainedTokenizer):
             mask_token=msk,
             **kwargs,
         )
-        self.max_len_single_sentence = self.max_len - 2  # take into account special tokens
+        # self.max_len_single_sentence = self.max_len - 2  # take into account special tokens
         self.do_lower_case = False
         self.vocab = vocab or construct_vocab(kmer)
         self.kmer = kmer

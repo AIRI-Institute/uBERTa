@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pysam
 import pytorch_lightning as pl
+import torch
 from Bio.Seq import Seq
 from more_itertools import sliding_window, windowed
 from ncls import NCLS
@@ -169,26 +170,35 @@ class DatasetGenerator:
             df = self.last_generated
         else:
             df = df.copy()
-        preparator = prepare_overlapping_seqs if merge_overlapping else prepare_seqs_around
-        seqs = preparator(df, self.ref, self.flank_size, self.kmer_size, self.col_names)
+        prep = prepare_overlapping_seqs if merge_overlapping else prepare_seqs_around
+        seqs = prep(df, self.ref, self.flank_size, self.kmer_size, self.col_names)
         self.last_generated = seqs
         return seqs
 
 
-class MLMLoader(pl.LightningDataModule):
+class uBERTaLoader(pl.LightningDataModule):
 
-    def __init__(self, df: pd.DataFrame, window_size: int, window_step: int,
+    def __init__(self,
+                 df: t.Optional[pd.DataFrame] = None,
+                 window_size: t.Optional[int] = None,
+                 window_step: t.Optional[int] = None,
                  tokenizer: t.Optional[DNATokenizer] = None,
+                 is_mlm_task: bool = True,
+                 train_ds: t.Optional[pd.DataFrame] = None,
+                 val_ds: t.Optional[pd.DataFrame] = None,
+                 test_ds: t.Optional[pd.DataFrame] = None,
                  train_tds: t.Optional[TensorDataset] = None,
                  val_tds: t.Optional[TensorDataset] = None,
                  test_tds: t.Optional[TensorDataset] = None,
-                 val_fraction: float = 0.1, test_fraction: float = 0.1, batch_size: int = 2 ** 5, num_proc: int = 8,
+                 val_fraction: float = 0.1, test_fraction: float = 0.1,
+                 batch_size: int = 2 ** 5, num_proc: int = 8,
                  col_names: ColNames = ColNames(),
                  ):
         super().__init__()
         self.df = df
         self.window_size = window_size
         self.window_step = window_step
+        self.is_mlm_task = is_mlm_task
         self.tokenizer = tokenizer
         self.val_fraction = val_fraction
         self.test_fraction = test_fraction
@@ -196,28 +206,45 @@ class MLMLoader(pl.LightningDataModule):
         self.num_proc = num_proc
         self.col_names = col_names
 
-        self.train = train_tds
-        self.val = val_tds
-        self.test = test_tds
+        self.train_ds = train_ds
+        self.val_ds = val_ds
+        self.test_ds = test_ds
+
+        self.train_tds = train_tds
+        self.val_tds = val_tds
+        self.test_tds = test_tds
 
         self.kmer = None if tokenizer is None else tokenizer.kmer
 
     def setup(self, stage: t.Optional[str] = None) -> None:
-        LOGGER.info(f'Total overlapping regions: {len(self.df)}')
-        val, tmp = train_test_split(self.df, self.val_fraction)
-        test, train = train_test_split(
-            tmp, self.test_fraction / (1 - self.val_fraction))
-        LOGGER.info(
-            f'Obtained new datasets. '
-            f'Train: {len(train)}, Val: {len(val)}, Test: {len(test)}')
-        train, val, test = starmap(self._process_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
-        return train, val, test
+        self._setup()
 
-    def _process_ds(self, df: pd.DataFrame, df_name: str):
+    def _setup(self) -> None:
+
+        if any(x is None for x in [self.train_tds, self.val_tds, self.test_tds]):
+            # Prepare dataframes
+            if any(x is None for x in [self.train_ds, self.val_ds, self.test_ds]):
+                LOGGER.info(f'Total initial sequences: {len(self.df)}')
+                val, tmp = train_test_split(self.df, self.val_fraction)
+                test, train = train_test_split(
+                    tmp, self.test_fraction / (1 - self.val_fraction))
+                self.train_ds, self.val_ds, self.test_ds = starmap(
+                    self._prep_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
+            LOGGER.info(f'Train: {len(self.train_ds)}, Val: {len(self.val_ds)}, Test: {len(self.test_ds)}')
+
+            # Prep tensor datasets
+            prep = self._prep_tds_mlm if self.is_mlm_task else self._prep_tds_cls
+            self.train_tds, self.val_tds, self.test_tds = map(
+                prep, [self.train_ds, self.val_ds, self.test_ds])
+            LOGGER.debug(f'Prepared tensor datasets')
+
+        return
+
+    def _prep_ds(self, df: pd.DataFrame, df_name: str):
         LOGGER.debug(f'Processing {df_name} with {len(df)} records')
 
         size, step = self.window_size - 2, self.window_step  # account for [CLS] and [SEP]
-        rolled = self.roll_window(df, size, step)
+        rolled = self._roll_window(df, size, step)
         LOGGER.debug(f'Rolled window with size {size}, step {step}; records: {len(rolled)}')
 
         rolled[self.col_names.starts] = rolled[self.col_names.starts].apply(self._reduce_by_middle)
@@ -225,7 +252,34 @@ class MLMLoader(pl.LightningDataModule):
         LOGGER.debug(f'Reduced labels to token level')
         return rolled
 
-    def roll_window(self, df: pd.DataFrame, window_size: int, window_step: int) -> pd.DataFrame:
+    def _prep_tds_mlm(self, df: pd.DataFrame) -> TensorDataset:
+        """
+        [  6    7  9   5    7 ]  input ids
+        [-100 -100 0 -100 -100]  classes
+        ...
+        Mask token ID is 4
+        ->
+        [  6    4  4   4    7 ]  input ids
+        [-100 -100 9 -100 -100]  labels
+        """
+        inp_ids, classes = self._prep_tds_cls(df).tensors
+        cls_msk = classes != -100
+        classes[cls_msk] = inp_ids[cls_msk]
+        cls_msk = fill_row_around_ones(cls_msk)
+        inp_ids[cls_msk] = 4
+        return TensorDataset(inp_ids, classes)
+
+    def _prep_tds_cls(self, df: pd.DataFrame) -> TensorDataset:
+        # For some reason, I have to split tokens manually for encode
+        seqs = (s.split() for s in df[self.col_names.seq])
+        encoded = list(map(self.tokenizer.encode, seqs))
+        classes = np.pad(
+            np.vstack(df[self.col_names.classes]),
+            ((0, 0), (1, 1)), constant_values=-100)
+        return TensorDataset(torch.tensor(encoded, dtype=torch.int),
+                             torch.tensor(classes, dtype=torch.int))
+
+    def _roll_window(self, df: pd.DataFrame, window_size: int, window_step: int) -> pd.DataFrame:
         _windowed = curry(windowed)(n=window_size, step=window_step)
 
         def roll(row):
@@ -256,17 +310,17 @@ class MLMLoader(pl.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.train, sampler=RandomSampler(self.train),
+            self.train_tds, sampler=RandomSampler(self.train_tds),
             batch_size=self.batch_size, num_workers=self.num_proc)
 
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.val, sampler=SequentialSampler(self.val),
+            self.val_tds, sampler=SequentialSampler(self.val_tds),
             batch_size=self.batch_size, num_workers=self.num_proc)
 
     def test_dataloader(self) -> DataLoader:
         return DataLoader(
-            self.test, sampler=SequentialSampler(self.test),
+            self.test_tds, sampler=SequentialSampler(self.test_tds),
             batch_size=self.batch_size, num_workers=self.num_proc)
 
     def predict_dataloader(self) -> DataLoader:
@@ -365,6 +419,20 @@ def reverse_complement(s: str) -> str:
 
 def kmerize(seq: str, kmer_size: int) -> str:
     return " ".join(map(lambda s: "".join(s), sliding_window(seq, kmer_size)))
+
+
+def fill_row_around_ones(a):
+    """
+    adapted from https://stackoverflow.com/questions/40223114/numpy-fill-fields-surrounding-a-1-in-an-array
+    """
+    rows, cols = a.shape
+    padded = np.pad(a, 1, 'constant', constant_values=0)
+    result = np.copy(a)
+    for r, c in ((1, 0), (1, 2)):
+        result |= padded[r:r+rows, c:c+cols]
+    if isinstance(a, np.ndarray):
+        return result
+    return torch.tensor(result, dtype=a.dtype)
 
 
 def sample_dataset(
@@ -597,14 +665,13 @@ def prepare_overlapping_seqs(
             _starts = np.flip(_starts)
 
         if kmer_size:
-            for i in range(3):
-                _seq = kmerize(seq[i:], kmer_size)
-                _ann, _st = map(
-                    lambda x: np.array(list(sliding_window(x[i:], kmer_size))),
-                    [ann_classes, _starts])
-                yield chrom, strand, _seq.upper(), _ann, _st
-        else:
-            yield chrom, strand, seq.upper(), ann_classes, _starts
+            _seq = kmerize(seq, kmer_size)
+            _ann, _st = map(
+                lambda x: np.array(list(sliding_window(x, kmer_size))),
+                [ann_classes, _starts])
+            return chrom, strand, _seq.upper(), _ann, _st
+
+        return chrom, strand, seq.upper(), ann_classes, _starts
 
     idx = ds[col_names.cc] == 0
     group_vars = [col_names.chrom, col_names.strand, col_names.cc, col_names.start]
@@ -613,7 +680,7 @@ def prepare_overlapping_seqs(
     groups_overlapping = map(getter, ds[~idx].groupby(group_vars[:-1]))
     groups = chain(groups_solitary, groups_overlapping)
     return pd.DataFrame(
-        chain.from_iterable(map(process_group, groups)),
+        map(process_group, groups),
         columns=[col_names.chrom, col_names.strand, col_names.seq,
                  col_names.classes, col_names.starts])
 

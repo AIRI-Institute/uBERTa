@@ -31,7 +31,7 @@ setup(
         'ncls',
         'scipy',
         'transformers',
-        'pytorch',
+#        'pytorch',
         'pytorch-lightning'
     ],
     # include_package_data=True,
