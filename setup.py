@@ -1,8 +1,6 @@
 from distutils.core import setup
 from pathlib import Path
 
-from setuptools import find_packages
-
 HERE = Path(__file__).parent
 README = (HERE / "README.md").read_text()
 
@@ -32,7 +30,9 @@ setup(
         'scipy',
         'transformers',
 #        'pytorch',
-        'pytorch-lightning'
+        'pytorch-lightning',
+        'tables',
+        'rich'
     ],
     # include_package_data=True,
     # package_data={

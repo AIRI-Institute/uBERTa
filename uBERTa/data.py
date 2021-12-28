@@ -183,28 +183,35 @@ class uBERTaLoader(pl.LightningDataModule):
                  window_size: t.Optional[int] = None,
                  window_step: t.Optional[int] = None,
                  tokenizer: t.Optional[DNATokenizer] = None,
-                 is_mlm_task: bool = True,
+                 is_mlm_task: bool = True, token_level: bool = True,
                  train_ds: t.Optional[pd.DataFrame] = None,
                  val_ds: t.Optional[pd.DataFrame] = None,
                  test_ds: t.Optional[pd.DataFrame] = None,
                  train_tds: t.Optional[TensorDataset] = None,
                  val_tds: t.Optional[TensorDataset] = None,
                  test_tds: t.Optional[TensorDataset] = None,
+                 att_mask_tokens: t.Sequence[str] = ('[PAD]', '[SEP]'),
                  val_fraction: float = 0.1, test_fraction: float = 0.1,
                  batch_size: int = 2 ** 5, num_proc: int = 8,
                  col_names: ColNames = ColNames(),
+                 dataset_names: t.Sequence[str] = (
+                         'train_ds.h5', 'val_ds.h5', 'test_ds.h5',
+                         'train_tds.bin', 'val_tds.bin', 'test_tds.bin')
                  ):
         super().__init__()
         self.df = df
         self.window_size = window_size
         self.window_step = window_step
         self.is_mlm_task = is_mlm_task
+        self.token_level = token_level
         self.tokenizer = tokenizer
         self.val_fraction = val_fraction
         self.test_fraction = test_fraction
         self.batch_size = batch_size
         self.num_proc = num_proc
         self.col_names = col_names
+        self.dataset_names = dataset_names
+        self.att_mask_tokens = att_mask_tokens
 
         self.train_ds = train_ds
         self.val_ds = val_ds
@@ -228,19 +235,43 @@ class uBERTaLoader(pl.LightningDataModule):
                 val, tmp = train_test_split(self.df, self.val_fraction)
                 test, train = train_test_split(
                     tmp, self.test_fraction / (1 - self.val_fraction))
+
+                # Roll window only in case of token-level classification,
+                # otherwise, use the unchanged dataset
+                prep_ds = self._roll_ds if self.token_level else lambda x, y: x
                 self.train_ds, self.val_ds, self.test_ds = starmap(
-                    self._prep_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
+                    prep_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
             LOGGER.info(f'Train: {len(self.train_ds)}, Val: {len(self.val_ds)}, Test: {len(self.test_ds)}')
 
             # Prep tensor datasets
-            prep = self._prep_tds_mlm if self.is_mlm_task else self._prep_tds_cls
+            prep_tds = self._prep_tds_mlm if self.is_mlm_task else self._prep_tds_cls
             self.train_tds, self.val_tds, self.test_tds = map(
-                prep, [self.train_ds, self.val_ds, self.test_ds])
+                prep_tds, [self.train_ds, self.val_ds, self.test_ds])
             LOGGER.debug(f'Prepared tensor datasets')
 
         return
 
-    def _prep_ds(self, df: pd.DataFrame, df_name: str):
+    def save_all(self, base: Path, overwrite: bool = False):
+        def save(name: str, ds: t.Union[TensorDataset, pd.DataFrame, None]):
+            p = base / name
+            if ds is None or (not overwrite and p.exists()):
+                LOGGER.debug(f'Skipping existing {name}')
+                return
+            if isinstance(ds, TensorDataset):
+                torch.save(ds, p)
+            else:
+                ds.to_hdf(p, name)
+
+        dss = [self.train_ds, self.val_ds, self.test_ds,
+               self.train_tds, self.val_tds, self.test_tds]
+
+        if not base.exists():
+            base.mkdir(exist_ok=True, parents=True)
+
+        for _name, _ds in zip(self.dataset_names, dss):
+            save(_name, _ds)
+
+    def _roll_ds(self, df: pd.DataFrame, df_name: str):
         LOGGER.debug(f'Processing {df_name} with {len(df)} records')
 
         size, step = self.window_size - 2, self.window_step  # account for [CLS] and [SEP]
@@ -254,30 +285,40 @@ class uBERTaLoader(pl.LightningDataModule):
 
     def _prep_tds_mlm(self, df: pd.DataFrame) -> TensorDataset:
         """
-        [  6    7  9   5    7 ]  input ids
-        [-100 -100 0 -100 -100]  classes
+        [  6    7  9   5    7    0 ]  input ids
+        [-100 -100 0 -100 -100 -100]  classes
         ...
         Mask token ID is 4
         ->
         [  6    4  4   4    7 ]  input ids
+        [  1    1  1   1    0 ]  attention mask (mask padding)
         [-100 -100 9 -100 -100]  labels
         """
-        inp_ids, classes = self._prep_tds_cls(df).tensors
+        inp_ids, att_msk, classes = self._prep_tds_cls(df).tensors
         cls_msk = classes != -100
         classes[cls_msk] = inp_ids[cls_msk]
         cls_msk = fill_row_around_ones(cls_msk)
+        cls_msk[:, 0] = False
+        cls_msk[:, -1] = False
         inp_ids[cls_msk] = 4
-        return TensorDataset(inp_ids, classes)
+        return TensorDataset(inp_ids, att_msk, classes)
 
     def _prep_tds_cls(self, df: pd.DataFrame) -> TensorDataset:
         # For some reason, I have to split tokens manually for encode
         seqs = (s.split() for s in df[self.col_names.seq])
         encoded = list(map(self.tokenizer.encode, seqs))
-        classes = np.pad(
-            np.vstack(df[self.col_names.classes]),
-            ((0, 0), (1, 1)), constant_values=-100)
-        return TensorDataset(torch.tensor(encoded, dtype=torch.int),
-                             torch.tensor(classes, dtype=torch.int))
+        inp_ids = torch.tensor(encoded, dtype=torch.long)
+        att_msk = torch.ones(inp_ids.shape, dtype=torch.int)
+        for tk in self.att_mask_tokens:
+            att_msk[inp_ids == self.tokenizer.vocab[tk]] = 0
+        if self.token_level:
+            classes = np.pad(
+                np.vstack(df[self.col_names.classes]),
+                ((0, 0), (1, 1)), constant_values=-100)
+            classes = torch.tensor(classes, dtype=torch.long)
+        else:
+            classes = torch.tensor(df[self.col_names.cls].values, dtype=torch.long)
+        return TensorDataset(inp_ids, att_msk, classes)
 
     def _roll_window(self, df: pd.DataFrame, window_size: int, window_step: int) -> pd.DataFrame:
         _windowed = curry(windowed)(n=window_size, step=window_step)
@@ -429,7 +470,7 @@ def fill_row_around_ones(a):
     padded = np.pad(a, 1, 'constant', constant_values=0)
     result = np.copy(a)
     for r, c in ((1, 0), (1, 2)):
-        result |= padded[r:r+rows, c:c+cols]
+        result |= padded[r:r + rows, c:c + cols]
     if isinstance(a, np.ndarray):
         return result
     return torch.tensor(result, dtype=a.dtype)
@@ -603,8 +644,8 @@ def sample_neg(
 
 def prepare_seqs_around(
         ds: pd.DataFrame, ref: Ref, flank_size: int,
-        col_names: ColNames = ColNames(),
         kmer_size: t.Optional[int] = None,
+        col_names: ColNames = ColNames()
 ) -> pd.DataFrame:
     def prepare_seq(chrom, pos, strand):
         seq = ref.fetch_around(chrom, pos + 1, strand, flank_size)

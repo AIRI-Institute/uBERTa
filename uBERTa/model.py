@@ -1,50 +1,16 @@
+import logging
+import typing as t
+from pathlib import Path
+
+import pytorch_lightning as pl
+import torch
 from torch import nn
-from transformers import BertPreTrainedModel, BertModel, BertForMaskedLM
-from transformers.models.bert.modeling_bert import BertOnlyMLMHead
+from torch.nn import CrossEntropyLoss
+from torch.optim.lr_scheduler import ExponentialLR
+from torchmetrics.functional import f1, precision, recall
+from transformers import BertModel, BertForMaskedLM, BertConfig
 
-
-class uBERTa(BertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
-        self.num_labels = config.num_labels
-
-        self.bert = BertModel(config)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = nn.Linear(config.hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
-        self.init_weights()
-
-    def forward(
-            self,
-            input_ids=None,
-            attention_mask=None,
-            token_type_ids=None,
-            position_ids=None,
-            head_mask=None,
-            inputs_embeds=None,
-            labels=None,
-            weight=None  # <--- sample weights (!)
-    ):
-        outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-        )
-
-        # return outputs
-
-        pooled_output = outputs[1]
-
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
-        probs = self.sigmoid(logits)
-
-        loss = nn.BCELoss(weight=weight)(probs, labels)
-
-        return loss, probs, logits, pooled_output
+LOGGER = logging.getLogger(__name__)
 
 
 class BertCentralPooler(nn.Module):
@@ -65,59 +31,106 @@ class BertCentralPooler(nn.Module):
         return pooled_output
 
 
-class preuBERTa(BertPreTrainedModel):
-    def __init__(self, config):
-        super().__init__(config)
+class uBERTa(pl.LightningModule):
+    def __init__(self, model_path: t.Optional[Path] = None,
+                 config: t.Optional[BertConfig] = None,
+                 pretrain: bool = True, token_level: bool = True,
+                 opt_kwargs: t.Optional[t.Dict[str, t.Any]] = None,
+                 bin_weight: t.Optional[t.Tuple[float, float]] = None,
+                 device: str = 'cuda',
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.pretrain = pretrain
+        self.token_level = token_level
+        self.opt_kwargs = {} if opt_kwargs is None else opt_kwargs
+        self.config = BertConfig() if config is None else config
 
-        self.bert = BertModel(config)
-        self.cls = BertOnlyMLMHead(config)
+        if model_path and model_path.exists():
+            self.config = self.config.from_pretrained(model_path)
+            LOGGER.debug(f'Loaded config {self.config}')
 
-        self.init_weights()
+        if pretrain:
+            self.bert = BertForMaskedLM(self.config)
+        else:
+            self.bert = BertModel(self.config)
+            self.dropout = nn.Dropout(0.3)
+            self.classifier = nn.Linear(self.config.hidden_size, 2)
+        self.bert.post_init()
 
-    def get_output_embeddings(self):
-        return self.cls.predictions.decoder
+        if model_path and model_path.exists():
+            self.bert = self.bert.from_pretrained(model_path)
 
-    def set_output_embeddings(self, new_embeddings):
-        self.cls.predictions.decoder = new_embeddings
+        if pretrain:
+            self.f1 = lambda y_h, y: f1(y_h, y)
+            self.prc = lambda y_h, y: precision(y_h, y)
+            self.rec = lambda y_h, y: recall(y_h, y)
+        else:
+            self.f1 = lambda y_h, y: f1(y_h, y, num_classes=2, average='none')[1]
+            self.prc = lambda y_h, y: precision(y_h, y, num_classes=2, average='none')[1]
+            self.rec = lambda y_h, y: recall(y_h, y, num_classes=2, average='none')[1]
 
-    def forward(
-            self,
-            input_ids=None,
-            attention_mask=None,
-            token_type_ids=None,
-            position_ids=None,
-            head_mask=None,
-            inputs_embeds=None,
-            encoder_hidden_states=None,
-            encoder_attention_mask=None,
-            labels=None,
-            # output_attentions=None,
-            # output_hidden_states=None,
-            # return_dict=None,
-            weight=None
-    ):
-        outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask,
-            # output_attentions=output_attentions,
-            # output_hidden_states=output_hidden_states,
-            # return_dict=return_dict,
-        )
+        self.__device = device
+        self.gamma = 0.5
+        self._softmax = nn.Softmax(dim=1)
+        self.bin_weigth = (
+            torch.tensor(bin_weight, dtype=torch.float).to(device)
+            if bin_weight is not None else None)
 
-        sequence_output = outputs[0]
-        prediction_scores = self.cls(sequence_output)
+    def forward(self, inp_ids, att_mask, labels, weights=None, **kwargs):
+        if self.pretrain:
+            return self.bert(inp_ids, attention_mask=att_mask, labels=labels, **kwargs)
+        outputs = self.bert(inp_ids, attention_mask=att_mask, **kwargs)
+        # Take either full seq output or pulled output
+        x = outputs[0] if self.token_level else outputs[1]
+        x = self.dropout(x)
+        logits = self.classifier(x)
+        loss_fct = CrossEntropyLoss(weight=self.bin_weigth, reduction='mean')
+        loss = loss_fct(logits.view(-1, 2), labels.view(-1))
+        return {'loss': loss, 'logits': logits, 'outputs': outputs}
 
-        loss_fct = nn.CrossEntropyLoss(weight=weight[0])  # -100 index = padding token
-        masked_lm_loss = loss_fct(prediction_scores.view(-1, self.config.vocab_size), labels.view(-1))
+    def generic_step(self, batch, step):
+        inp_ids, att_mask, labels = batch
+        output = self(inp_ids, att_mask, labels)
+        if isinstance(output, dict):
+            loss, logits = output['loss'], output['logits']
+        else:
+            loss, logits = output
+        mask = labels != -100
+        y_prob = self._softmax(logits[mask])
+        y_true = labels[mask]
 
-        # output = (prediction_scores,) + outputs[2:]
-        return (masked_lm_loss, prediction_scores) + outputs
+        if step != 'predict':
+            self.log(f'{step}_loss', loss, prog_bar=True)
+            self.log(f'{step}_f1', self.f1(y_prob, y_true), prog_bar=True)
+            self.log(f'{step}_prc', self.prc(y_prob, y_true), prog_bar=True)
+            self.log(f'{step}_rec', self.rec(y_prob, y_true), prog_bar=True)
+            return output
+
+        return output, y_prob, y_true
+
+    def training_step(self, batch, idx=None):
+        return self.generic_step(batch, 'train')
+
+    def validation_step(self, batch, idx=None):
+        return self.generic_step(batch, 'val')
+
+    def test_step(self, batch, idx=None):
+        return self.generic_step(batch, 'test')
+
+    def predict_step(self, batch, idx=None, **kwargs):
+        return self.generic_step(batch, 'predict')
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), **self.opt_kwargs)
+        # scheduler = ReduceLROnPlateau(optimizer, patience=3, mode='min', verbose=True)
+        scheduler = ExponentialLR(optimizer, self.gamma)
+        return {"optimizer": optimizer,
+                "lr_scheduler": {
+                    # "monitor": "val_loss",
+                    'scheduler': scheduler,
+                    'interval': 'epoch',
+                    # 'frequency': 5
+                }}
 
 
 if __name__ == '__main__':
