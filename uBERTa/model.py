@@ -37,7 +37,7 @@ class uBERTa(pl.LightningModule):
                  pretrain: bool = True, token_level: bool = True,
                  opt_kwargs: t.Optional[t.Dict[str, t.Any]] = None,
                  bin_weight: t.Optional[t.Tuple[float, float]] = None,
-                 device: str = 'cuda',
+                 device: str = 'cuda', gamma: float = 0.5,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pretrain = pretrain
@@ -70,7 +70,7 @@ class uBERTa(pl.LightningModule):
             self.rec = lambda y_h, y: recall(y_h, y, num_classes=2, average='none')[1]
 
         self.__device = device
-        self.gamma = 0.5
+        self.gamma = gamma
         self._softmax = nn.Softmax(dim=1)
         self.bin_weigth = (
             torch.tensor(bin_weight, dtype=torch.float).to(device)
