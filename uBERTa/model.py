@@ -8,7 +8,8 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 from torch.optim.lr_scheduler import ExponentialLR
 from torchmetrics.functional import f1, precision, recall
-from transformers import BertModel, BertForMaskedLM, BertConfig
+from transformers import (BertModel, BertForMaskedLM, BertConfig,
+                          BertForSequenceClassification, BertForTokenClassification)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,13 +35,13 @@ class BertCentralPooler(nn.Module):
 class uBERTa(pl.LightningModule):
     def __init__(self, model_path: t.Optional[Path] = None,
                  config: t.Optional[BertConfig] = None,
-                 pretrain: bool = True, token_level: bool = True,
+                 is_mlm_task: bool = True, token_level: bool = True,
                  opt_kwargs: t.Optional[t.Dict[str, t.Any]] = None,
                  bin_weight: t.Optional[t.Tuple[float, float]] = None,
                  device: str = 'cuda', gamma: float = 0.5,
                  *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pretrain = pretrain
+        self.is_mlm_task = is_mlm_task
         self.token_level = token_level
         self.opt_kwargs = {} if opt_kwargs is None else opt_kwargs
         self.config = BertConfig() if config is None else config
@@ -49,18 +50,25 @@ class uBERTa(pl.LightningModule):
             self.config = self.config.from_pretrained(model_path)
             LOGGER.debug(f'Loaded config {self.config}')
 
-        if pretrain:
+        if is_mlm_task:
             self.bert = BertForMaskedLM(self.config)
         else:
-            self.bert = BertModel(self.config)
-            self.dropout = nn.Dropout(0.3)
-            self.classifier = nn.Linear(self.config.hidden_size, 2)
-        self.bert.post_init()
+            if bin_weight is not None:
+                self.bert = BertModel(self.config)
+                self.dropout = nn.Dropout(0.1)
+                self.classifier = nn.Linear(self.config.hidden_size, 2)
+            else:
+                if token_level:
+                    self.bert = BertForTokenClassification(self.config)
+                else:
+                    self.bert = BertForSequenceClassification(self.config)
 
         if model_path and model_path.exists():
             self.bert = self.bert.from_pretrained(model_path)
 
-        if pretrain:
+        LOGGER.debug(f'Model def\n{self.bert}')
+
+        if is_mlm_task:
             self.f1 = lambda y_h, y: f1(y_h, y)
             self.prc = lambda y_h, y: precision(y_h, y)
             self.rec = lambda y_h, y: recall(y_h, y)
@@ -75,9 +83,10 @@ class uBERTa(pl.LightningModule):
         self.bin_weigth = (
             torch.tensor(bin_weight, dtype=torch.float).to(device)
             if bin_weight is not None else None)
+        self.bert.post_init()
 
     def forward(self, inp_ids, att_mask, labels, weights=None, **kwargs):
-        if self.pretrain:
+        if self.bin_weigth is None:
             return self.bert(inp_ids, attention_mask=att_mask, labels=labels, **kwargs)
         outputs = self.bert(inp_ids, attention_mask=att_mask, **kwargs)
         # Take either full seq output or pulled output

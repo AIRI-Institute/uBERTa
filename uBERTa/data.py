@@ -269,7 +269,8 @@ class uBERTaLoader(pl.LightningDataModule):
     def _prep_ds(self, df: pd.DataFrame, df_name: str):
         LOGGER.debug(f'Processing {df_name} with {len(df)} records')
 
-        size, step = self.window_size - 2, self.window_step  # account for [CLS] and [SEP]
+        # Window size is given in kmers -> only account for [CLS] and [SEP]
+        size, step = self.window_size - 2, self.window_step
         rolled = self._roll_window(df, size, step)
         LOGGER.debug(f'Rolled window with size {size}, step {step}; records: {len(rolled)}')
 
@@ -338,8 +339,7 @@ class uBERTaLoader(pl.LightningDataModule):
     def _reduce_by_middle(a):
         assert len(a.shape) == 2
         assert a.shape[1] % 2 == 1
-        m = a.shape[1] // 2
-        return np.squeeze(a[:, m])
+        return np.max(a[:, 1:-1], axis=1)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
