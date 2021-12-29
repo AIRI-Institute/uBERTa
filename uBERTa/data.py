@@ -345,7 +345,7 @@ class uBERTaLoader(pl.LightningDataModule):
 
     @staticmethod
     def _reduce_by_middle(a):
-        assert len(a.shape) == 2
+        assert len(a.shape) >= 2
         assert a.shape[1] % 2 == 1
         return np.max(a[:, 1:-1], axis=1)
 
