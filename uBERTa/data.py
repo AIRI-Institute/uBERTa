@@ -183,7 +183,7 @@ class uBERTaLoader(pl.LightningDataModule):
                  window_size: t.Optional[int] = None,
                  window_step: t.Optional[int] = None,
                  tokenizer: t.Optional[DNATokenizer] = None,
-                 is_mlm_task: bool = True,
+                 is_mlm_task: bool = True, token_level: bool = True,
                  train_ds: t.Optional[pd.DataFrame] = None,
                  val_ds: t.Optional[pd.DataFrame] = None,
                  test_ds: t.Optional[pd.DataFrame] = None,
@@ -203,6 +203,7 @@ class uBERTaLoader(pl.LightningDataModule):
         self.window_size = window_size
         self.window_step = window_step
         self.is_mlm_task = is_mlm_task
+        self.token_level = token_level
         self.tokenizer = tokenizer
         self.val_fraction = val_fraction
         self.test_fraction = test_fraction
@@ -234,14 +235,18 @@ class uBERTaLoader(pl.LightningDataModule):
                 val, tmp = train_test_split(self.df, self.val_fraction)
                 test, train = train_test_split(
                     tmp, self.test_fraction / (1 - self.val_fraction))
+
+                # Roll window only in case of token-level classification,
+                # otherwise, use the unchanged dataset
+                prep_ds = self._roll_ds if self.token_level else lambda x, y: x
                 self.train_ds, self.val_ds, self.test_ds = starmap(
-                    self._prep_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
+                    prep_ds, [(train, 'Train'), (val, 'Val'), (test, 'Test')])
             LOGGER.info(f'Train: {len(self.train_ds)}, Val: {len(self.val_ds)}, Test: {len(self.test_ds)}')
 
             # Prep tensor datasets
-            prep = self._prep_tds_mlm if self.is_mlm_task else self._prep_tds_cls
+            prep_tds = self._prep_tds_mlm if self.is_mlm_task else self._prep_tds_cls
             self.train_tds, self.val_tds, self.test_tds = map(
-                prep, [self.train_ds, self.val_ds, self.test_ds])
+                prep_tds, [self.train_ds, self.val_ds, self.test_ds])
             LOGGER.debug(f'Prepared tensor datasets')
 
         return
@@ -266,7 +271,7 @@ class uBERTaLoader(pl.LightningDataModule):
         for _name, _ds in zip(self.dataset_names, dss):
             save(_name, _ds)
 
-    def _prep_ds(self, df: pd.DataFrame, df_name: str):
+    def _roll_ds(self, df: pd.DataFrame, df_name: str):
         LOGGER.debug(f'Processing {df_name} with {len(df)} records')
 
         # Window size is given in kmers -> only account for [CLS] and [SEP]
@@ -303,14 +308,17 @@ class uBERTaLoader(pl.LightningDataModule):
         # For some reason, I have to split tokens manually for encode
         seqs = (s.split() for s in df[self.col_names.seq])
         encoded = list(map(self.tokenizer.encode, seqs))
-        classes = np.pad(
-            np.vstack(df[self.col_names.classes]),
-            ((0, 0), (1, 1)), constant_values=-100)
         inp_ids = torch.tensor(encoded, dtype=torch.long)
         att_msk = torch.ones(inp_ids.shape, dtype=torch.int)
         for tk in self.att_mask_tokens:
             att_msk[inp_ids == self.tokenizer.vocab[tk]] = 0
-        classes = torch.tensor(classes, dtype=torch.long)
+        if self.token_level:
+            classes = np.pad(
+                np.vstack(df[self.col_names.classes]),
+                ((0, 0), (1, 1)), constant_values=-100)
+            classes = torch.tensor(classes, dtype=torch.long)
+        else:
+            classes = torch.tensor(df[self.col_names.cls].values, dtype=torch.long)
         return TensorDataset(inp_ids, att_msk, classes)
 
     def _roll_window(self, df: pd.DataFrame, window_size: int, window_step: int) -> pd.DataFrame:
@@ -636,8 +644,8 @@ def sample_neg(
 
 def prepare_seqs_around(
         ds: pd.DataFrame, ref: Ref, flank_size: int,
-        col_names: ColNames = ColNames(),
         kmer_size: t.Optional[int] = None,
+        col_names: ColNames = ColNames()
 ) -> pd.DataFrame:
     def prepare_seq(chrom, pos, strand):
         seq = ref.fetch_around(chrom, pos + 1, strand, flank_size)
