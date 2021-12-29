@@ -279,8 +279,12 @@ class uBERTaLoader(pl.LightningDataModule):
         rolled = self._roll_window(df, size, step)
         LOGGER.debug(f'Rolled window with size {size}, step {step}; records: {len(rolled)}')
 
-        rolled[self.col_names.starts] = rolled[self.col_names.starts].apply(self._reduce_by_middle)
-        rolled[self.col_names.classes] = rolled[self.col_names.classes].apply(self._reduce_by_middle)
+        # rolled[self.col_names.starts] = rolled[self.col_names.starts].apply(self._reduce_by_middle)
+        # rolled[self.col_names.classes] = rolled[self.col_names.classes].apply(self._reduce_by_middle)
+        rolled[[self.col_names.classes, self.col_names.starts]] = list(starmap(
+            self._reduce_by_positive,
+            zip(rolled[self.col_names.classes], rolled[self.col_names.starts])))
+
         LOGGER.debug(f'Reduced labels to token level')
         return rolled
 
@@ -346,8 +350,30 @@ class uBERTaLoader(pl.LightningDataModule):
     @staticmethod
     def _reduce_by_middle(a):
         assert len(a.shape) == 2
-        assert a.shape[1] % 2 == 1
+        # assert a.shape[1] % 2 == 1
         return np.max(a[:, 1:-1], axis=1)
+
+    @staticmethod
+    def _reduce_by_positive(classes, positions):
+        def _reduce(cs, ps):
+            idx_1 = cs == 1
+            idx_0 = cs == 0
+            if np.any(idx_1):
+                return cs[idx_1][0], ps[idx_1][0]
+            if np.any(idx_0):
+                return cs[idx_0][0], ps[idx_0][0]
+            return -100, 0
+
+        assert len(classes.shape) == len(positions.shape) == 2
+        assert len(classes) == len(positions)
+        if classes.shape[1] == 1:
+            return np.squeeze(classes), np.squeeze(positions)
+
+        classes = classes[:, 1:-1]
+        positions = positions[:, 1:-1]
+
+        reduced = np.array(list(starmap(_reduce, zip(classes, positions))))
+        return np.squeeze(reduced[:,0]), np.squeeze(reduced[:,1])
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
