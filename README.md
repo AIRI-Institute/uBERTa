@@ -1,23 +1,31 @@
 # uBERTa
 
-----
-
-## `DataGenerator` usage
-
-Prerequisites:
-1. Clone this repo
-2. Run `pip install -e /path/to/repo`
-3. [Download](https://drive.google.com/file/d/1ttcKSt9I5viiZendOV7_36HBtmClbmZd/view?usp=sharing) hg38 assembly.
-4. [Download](https://drive.google.com/file/d/1keUHHHeM_97owdOP-wUpuP7gBO-_lFfb/view?usp=sharing) our "base" dataset.
-
-Remarks:
-- You may need to unpack the base dataset first due to pandas having header parsing issues of the archived table (e.g., `tar -xzf DS_BASE.tsv.tar.gz`)
-- For CLI downloads consider using [gdown](https://github.com/wkentaro/gdown) as `gdown --fuzzy ...` with the links above.
-
-Follow-up: check the Jupyter notebook `./notebooks/generator_usage.ipynb`.
+uORF BERT model to annotate putative TIS of the human genome.
 
 ----
 
-# Fine-tuning the model
+## Installation
 
-Check the Jupyter notebook `notebooks/fine_tune_example.ipynb`.
+0. (Optional) Create a new conda environment, e.g. 
+   1. `conda create -n uberta python=3.8 -c conda-forge -y`
+   2. `conda activate uberta`
+1. Clone this repo `git clone https://github.com/skoblov-lab/uBERTa.git`
+2. Install dependencies
+   1. Install [pytorch](https://pytorch.org/get-started/locally/), e.g., `conda install pytorch torchvision torchaudio cudatoolkit=10.2 -c pytorch`
+   2. Install `uBERTa` dependencies `pip install -e ./uBERTa`
+
+To go through the notebooks, additional dependencies are required. 
+We assume you are using conda.
+
+- Jupyter (e.g., jupyter lab): `conda install -c conda-forge -y jupyterlab ipywidgets`
+- `conda install -c conda-forge -y scikit-learn scipy`
+- `pip install pyliftover`
+
+## Usage
+
+Currently, for proper functioning, uBERTa requires an experimental signal as a part of the input.
+Thus, its usage is limited to the regions of the human genomes well covered by experimental data.
+Keep this in mind while utilizing the model.
+The basic usage example is provided in `notebooks/basic_usage.ipynb`.
+For more advanced usage, consider exploring `predict_5UTR.ipynb`.
+Predictions are available via [this link](https://drive.google.com/file/d/1a6JlTgCKxO45nRLJ1qMpi6B-8OYLCrWf/view?usp=sharing).

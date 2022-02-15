@@ -1,6 +1,7 @@
 import sys
 from collections import namedtuple
 
+VALID_START = ('AAG', 'ACG', 'AGG', 'ATA', 'ATC', 'ATG', 'ATT', 'CTG', 'GTG', 'TTG')
 VALID_CHROM = (*(f'chr{i}' for i in range(23)), 'chrX', 'chrY')
 VALID_CHROM_FLANKS = {
     'chr1': (10000, 10000),
@@ -29,26 +30,19 @@ VALID_CHROM_FLANKS = {
     'chrY': (10000, 10000)
 }
 
-_columns = ['chrom', 'start', 'end', 'codon', 'strand', 'gene_id',
-            'group', 'level', 'analyzed', 'cls', 'cc', 'seq',
-            'classes', 'starts']
+_columns = ['chrom', 'start', 'end', 'codon', 'strand', 'gene_id', 'dataset',
+            'group', 'level', 'analyzed', 'cls', 'cc', 'seq', 'seq_enum', 'seq_enum_pos',
+            'classes', 'starts', 'signal']
 _defaults = [
-    'Chrom', 'Start', 'End', 'StartCodonFetched',
-    'Strand', 'GeneIDUnique', 'Group', 'LevelStartCodonStartFetchedAround2',
-    'IsAnalyzed', 'IsPositive', 'CC', 'Seq', 'Classes', 'Starts']
+    'Chrom', 'Start', 'End', 'StartCodon',
+    'Strand', 'GeneID', 'Dataset', 'Group', 'LevelStartCodonStartFetchedAround2',
+    'IsAnalyzed', 'IsPositive', 'CC', 'Seq', 'SeqEnum', 'SeqEnumPositive',
+    'Classes', 'Starts', 'Signal']
 
-if sys.version < "3.7":
-    ColNames = lambda: namedtuple('ColNames', _columns)(*_defaults)
-else:
-    ColNames = namedtuple('ColNames', _columns, defaults=_defaults)
 
-ModelSetup = namedtuple('Setup', ['Config', 'Model', 'Tokenizer', 'ModelPath'])
-RunSetup = namedtuple('Setup', ['BatchSize', 'Epochs', 'WarmupPerc'])
-OptSetup = namedtuple('Setup', ['LearningRate', 'Epsilon', 'Betas', 'WeightDecay'])
-StopSetup = namedtuple('Setup', ['Rounds', 'Tolerance', 'ScoreType'])
+ColNames = namedtuple('ColNames', _columns, defaults=_defaults)
 
-Scores = namedtuple('Scores', ['acc', 'roc_auc', 'f1', 'prec', 'rec'])
-
+DefaultColNames = ColNames()
 
 if __name__ == '__main__':
     raise RuntimeError()

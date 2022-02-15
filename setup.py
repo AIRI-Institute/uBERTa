@@ -6,7 +6,7 @@ README = (HERE / "README.md").read_text()
 
 setup(
     name='uBERTa',
-    version='0.1dev1',
+    version='0.1',
     author='Ivan Reveguk',
     author_email='ivan.reveguk@gmail.com',
     # description='',
@@ -15,28 +15,19 @@ setup(
     classifiers=[
         "Programming Language :: Python :: 3",
     ],
-    python_requires='>=3.6',
+    python_requires='>=3.8',
     install_requires=[
         'pysam>=0.17.0',
         'setuptools>=58.0.4',
-        'pandas',
-        'numpy',
-        'biopython',
-        'tqdm',
-        'toolz',
+        'pandas>=1.4.0',
+        'numpy>=1.21.2',
+        'biopython>=1.79',
+        'tqdm>=4.62.3',
+        'toolz>=0.11.2',
         'more-itertools>=8.12.0',
-        'networkx',
-        'ncls',
-        'scipy',
-        'transformers',
-#        'pytorch',
-        'pytorch-lightning',
-        'tables',
-        'rich'
+        'transformers>=4.15.0',
+        'pytorch-lightning>=1.5.7',
+        'tables>=3.6.1',
+        'pyBigWig>=0.3.18'
     ],
-    # include_package_data=True,
-    # package_data={
-    #     '': ['*.conf', '*.exe']
-    # },
-    # packages=find_packages(exclude=['test']),
 )
