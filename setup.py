@@ -16,6 +16,7 @@ setup(
         "Programming Language :: Python :: 3",
     ],
     python_requires='>=3.8',
+    package_dir={'': 'uBERTa'},
     install_requires=[
         'pysam>=0.17.0',
         'setuptools>=58.0.4',
