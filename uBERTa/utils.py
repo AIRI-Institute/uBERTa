@@ -164,11 +164,13 @@ def fill_row_around_ones(a):
 
 def split_values(
         df: pd.DataFrame, col: str, to_array: bool = True,
-        dtype=np.int, sep=',') -> pd.DataFrame:
+        dtype=np.int, sep=',', conv_to=None) -> pd.DataFrame:
     def split(vs):
         if not isinstance(vs, str):
             return vs
         _vs = vs.split(sep)
+        if conv_to:
+            _vs = list(map(conv_to, _vs))
         if to_array:
             _vs = np.array(_vs, dtype=dtype)
         return _vs

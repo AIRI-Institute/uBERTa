@@ -29,6 +29,7 @@ class DNATokenizer(PreTrainedTokenizer):
         )
         self.do_lower_case = False
         self.vocab = vocab or construct_vocab(kmer)
+        self.ids_to_tokens = {v: k for k, v in self.vocab.items()}
         self.kmer = kmer
 
     def get_vocab(self) -> Dict[str, int]:

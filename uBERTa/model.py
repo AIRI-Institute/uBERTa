@@ -102,6 +102,46 @@ class WeightedDistilBertClassifier(DistilBertPreTrainedModel):
         return {'loss': loss, 'logits': x.detach(), 'outputs': outputs}
 
 
+class WeightedDistilBertClassifier2(DistilBertPreTrainedModel):
+    """
+    A classifier based on the DistilBERT model supporting class weights for the `CrossEntropyLoss`.
+    """
+
+    def __init__(self, config, weight=None):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.weight = weight
+        self.config = config
+
+        self.bert = DistilBertModel(config)
+        self.dropout = nn.Dropout(0.2)
+        self.embed = nn.Embedding(
+            config.vocab_size, config.dim, padding_idx=0)
+        self.dense = nn.Linear(config.dim, 2)
+        self.loss = CrossEntropyLoss(weight=self.weight)
+
+        self.bert.post_init()
+
+    def forward(self, inp_ids, att_mask, labels, signal, **kwargs):
+        emb = self.embed(inp_ids)
+        if self.config.use_signal:
+            if len(signal.shape) == 2:
+                emb[:, :, -1] += signal
+            if len(signal.shape) == 3:
+                last_dim = signal.shape[-1]
+                emb[:, :, -last_dim:] += signal
+
+        outputs = self.bert(inputs_embeds=emb, attention_mask=att_mask, **kwargs)
+        x = outputs[0]
+        x = self.dropout(x)
+        x = self.dense(x)
+        if labels is not None:
+            loss = self.loss(x.view(-1, 2), labels.view(-1))
+        else:
+            loss = None
+        return {'loss': loss, 'logits': x.detach(), 'outputs': outputs}
+
+
 class WeightedDeBertaClassifier(DebertaV2PreTrainedModel):
     """
     A classifier based on the DebertaV2 model supporting class weights for the `CrossEntropyLoss`.
