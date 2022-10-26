@@ -58,6 +58,9 @@ For 5'UTRs that did undergo manual curation, the colors are the following:
   - black -- False Positive (FP)
 - `prediction_scores.tsv` table with prediction scores per dataset and start codon.
 
+Additionally, we provide predictions for lncRNA:
+- [uBERTa predictions](https://drive.google.com/file/d/1zsYziB5iwnW4aaFY9oZsxMHKz3BPhEOd/view?usp=sharing)
+- XGBoost predictions: TBD
 
 # Additional links
 
